@@ -1,34 +1,12 @@
-import os
 import streamlit as st
 import openai
 import pandas as pd
-import timesfm
-from datetime import datetime, timedelta
+from prophet import Prophet
+import plotly.graph_objects as go
 import json
-
-# Set JAX to use CPU
-os.environ['JAX_PLATFORMS'] = 'cpu'
-os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
 # Set OpenAI API key
 openai.api_key = st.secrets["openai_api_key"]
-
-# Initialize TimesFM model
-@st.cache_resource
-def load_timesfm_model():
-    tfm = timesfm.TimesFm(
-        context_len=512,
-        horizon_len=5,  # 5 future predictions
-        input_patch_len=32,
-        output_patch_len=128,
-        num_layers=20,
-        model_dims=1280,
-        backend='cpu',
-    )
-    tfm.load_from_checkpoint(repo_id="google/timesfm-1.0-200m")
-    return tfm
-
-tfm = load_timesfm_model()
 
 def get_market_size_data(input1, input2):
     prompt = f"""Can you list the historic market size figures of {input1} in {input2} industry for the last five years?
@@ -53,44 +31,48 @@ def get_market_size_data(input1, input2):
 
     try:
         data = json.loads(response.choices[0].message.content)
-        return pd.DataFrame(list(data.items()), columns=['Year', 'MarketSize'])
+        df = pd.DataFrame(list(data.items()), columns=['ds', 'y'])
+        df['ds'] = pd.to_datetime(df['ds'])
+        return df
     except json.JSONDecodeError:
         st.error("Error: Could not parse the response from OpenAI. Please try again.")
         return None
 
 def forecast_market_size(df):
-    df['ds'] = pd.to_datetime(df['Year'], format='%Y')
-    df['y'] = df['MarketSize']
-    df['unique_id'] = ['market_size'] * len(df)
-
-    forecast_df = tfm.forecast_on_df(
-        inputs=df,
-        freq="Y",
-        value_name="y",
-        num_jobs=-1,
-    )
-
-    return forecast_df
+    model = Prophet()
+    model.fit(df)
+    future = model.make_future_dataframe(periods=5, freq='Y')
+    forecast = model.predict(future)
+    return forecast
 
 def plot_market_size(historical_df, forecast_df):
-    # Combine historical and forecast data
-    plot_df = pd.concat([
-        historical_df.rename(columns={'Year': 'date', 'MarketSize': 'Historical'}),
-        forecast_df[['ds', 'timesfm', 'timesfm-q-0.1', 'timesfm-q-0.9']].rename(columns={
-            'ds': 'date', 'timesfm': 'Forecast', 'timesfm-q-0.1': 'Lower Bound', 'timesfm-q-0.9': 'Upper Bound'
-        })
-    ]).melt(id_vars=['date'], var_name='Series', value_name='Value')
+    fig = go.Figure()
 
-    # Create the chart
-    chart = st.line_chart(plot_df.set_index('date'), y='Value')
+    # Plot historical data
+    fig.add_trace(go.Scatter(x=historical_df['ds'], y=historical_df['y'],
+                             mode='markers+lines', name='Historical', line=dict(color='blue')))
 
-    return chart
+    # Plot forecast
+    fig.add_trace(go.Scatter(x=forecast_df['ds'], y=forecast_df['yhat'],
+                             mode='lines', name='Forecast', line=dict(color='red')))
+
+    # Add confidence interval
+    fig.add_trace(go.Scatter(x=forecast_df['ds'].tolist() + forecast_df['ds'].tolist()[::-1],
+                             y=forecast_df['yhat_upper'].tolist() + forecast_df['yhat_lower'].tolist()[::-1],
+                             fill='toself', fillcolor='rgba(255,0,0,0.2)', line=dict(color='rgba(255,255,255,0)'),
+                             name='Confidence Interval'))
+
+    fig.update_layout(title='Market Size Prediction',
+                      xaxis_title='Year',
+                      yaxis_title='Market Size')
+
+    return fig
 
 def generate_summary(historical_df, forecast_df, input1, input2):
     prompt = f"""Based on the following historical and forecasted market size data for {input1} in the {input2} industry, 
     provide a brief summary of the market trends and future outlook. 
     Historical data: {historical_df.to_dict()}
-    Forecast data: {forecast_df[['ds', 'timesfm']].to_dict()}
+    Forecast data: {forecast_df[['ds', 'yhat']].to_dict()}
     Limit your response to 3-4 sentences."""
 
     response = openai.ChatCompletion.create(
@@ -117,7 +99,8 @@ def main():
             forecast_df = forecast_market_size(historical_df)
             
             st.subheader("Market Size Prediction Chart")
-            plot_market_size(historical_df, forecast_df)
+            fig = plot_market_size(historical_df, forecast_df)
+            st.plotly_chart(fig)
             
             summary = generate_summary(historical_df, forecast_df, input1, input2)
             st.subheader("Summary")
@@ -127,7 +110,7 @@ def main():
             st.dataframe(historical_df)
 
             st.subheader("Forecast Data")
-            st.dataframe(forecast_df[['ds', 'timesfm', 'timesfm-q-0.1', 'timesfm-q-0.9']])
+            st.dataframe(forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']])
 
 if __name__ == "__main__":
     main()
