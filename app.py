@@ -1,6 +1,8 @@
 import streamlit as st
 from openai import OpenAI
 import pandas as pd
+import numpy as np
+np.float_ = np.float64
 from prophet import Prophet
 import plotly.graph_objects as go
 import json
