@@ -1,19 +1,12 @@
 import streamlit as st
-import openai
+from openai import OpenAI
 import pandas as pd
-import numpy as np
-np.float_ = np.float64
 from prophet import Prophet
 import plotly.graph_objects as go
 import json
 
-# Set OpenAI API key
-openai.api_key = st.secrets["openai_api_key"]
-
-def convert_to_float(value):
-    if isinstance(value, (np.floating, float)):
-        return float(value)
-    return value
+# Initialize OpenAI client
+client = OpenAI(api_key=st.secrets["openai_api_key"])
 
 def get_market_size_data(input1, input2):
     prompt = f"""Can you list the historic market size figures of {input1} in {input2} industry for the last five years?
@@ -28,7 +21,7 @@ def get_market_size_data(input1, input2):
     }}
     Only provide the JSON data, no additional text."""
 
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
             {"role": "system", "content": "You are a helpful assistant that provides market size data in JSON format."},
@@ -76,17 +69,13 @@ def plot_market_size(historical_df, forecast_df):
     return fig
 
 def generate_summary(historical_df, forecast_df, input1, input2):
-    # Convert dataframes to dict, ensuring all values are JSON serializable
-    historical_dict = historical_df.applymap(convert_to_float).to_dict()
-    forecast_dict = forecast_df[['ds', 'yhat']].applymap(convert_to_float).to_dict()
-
     prompt = f"""Based on the following historical and forecasted market size data for {input1} in the {input2} industry, 
     provide a brief summary of the market trends and future outlook. 
-    Historical data: {historical_dict}
-    Forecast data: {forecast_dict}
+    Historical data: {historical_df.to_dict()}
+    Forecast data: {forecast_df[['ds', 'yhat']].to_dict()}
     Limit your response to 3-4 sentences."""
 
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
             {"role": "system", "content": "You are a helpful assistant that provides market analysis summaries."},
